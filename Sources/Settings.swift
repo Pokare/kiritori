@@ -306,6 +306,8 @@ final class SettingsController: NSObject, NSWindowDelegate {
             check("シャッター音を鳴らす", get: { Prefs.playSound }, set: { Prefs.playSound = $0 }),
             check("メニューバーに印を出す", tip: "隠したあとは、Kiritori をもう一度開くとこの設定画面が出ます。ショートカットはそのまま使えます",
                   get: { Prefs.showMenuBarIcon }, set: { [weak self] on in Prefs.showMenuBarIcon = on; self?.delegate?.applyMenuBarIcon() }),
+            check("新しい版を自動で確認する", tip: "新しい版が出たら知らせます。確認のときは GitHub に「いちばん新しい版」を問い合わせるだけで、撮ったものは送りません",
+                  get: { Prefs.autoUpdateCheck }, set: { Prefs.autoUpdateCheck = $0; Updater.shared.start() }),
             row("保存先", path, button("変える…") { [weak self] in self?.delegate?.chooseSaveDir() },
                 button("開く") { NSWorkspace.shared.open(Prefs.saveDir) }),
             NSView(),
@@ -491,7 +493,8 @@ final class SettingsController: NSObject, NSWindowDelegate {
         let logFile = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0].appendingPathComponent("Logs/Kiritori.log")
         return pane("情報", symbol: "info.circle", [
             name,
-            note("自分用のスクリーンショットアプリです。撮ったものはこの Mac の中だけに置かれ、どこにも送られません。"),
+            note("自分用のスクリーンショットアプリです。撮ったものはこの Mac の中だけに置かれ、どこにも送られません。新しい版の確認のときだけ GitHub に問い合わせます。"),
+            row("更新", button("更新を確認する") { Updater.shared.check(manual: true) }, button("配布ページを開く") { NSWorkspace.shared.open(Updater.pageURL) }),
             row("履歴の置き場所", button("フォルダを開く") { NSWorkspace.shared.open(Prefs.historyDir) }),
             row("動作の記録", button("ログを開く") { NSWorkspace.shared.open(logFile) }),
         ])

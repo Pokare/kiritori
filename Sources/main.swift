@@ -237,6 +237,16 @@ enum Prefs {
         set { d.set(newValue, forKey: "cameraMirror") }
     }
     /// メニューバーの印を出す
+    /// 新しい版が出ていないかを自動で見に行く
+    static var autoUpdateCheck: Bool {
+        get { d.object(forKey: "autoUpdateCheck") == nil ? true : d.bool(forKey: "autoUpdateCheck") }
+        set { d.set(newValue, forKey: "autoUpdateCheck") }
+    }
+    /// もう知らせた版（同じ版を何度も知らせないため）
+    static var updateNotified: String {
+        get { d.string(forKey: "updateNotified") ?? "" }
+        set { d.set(newValue, forKey: "updateNotified") }
+    }
     static var showMenuBarIcon: Bool {
         get { d.object(forKey: "showMenuBarIcon") == nil ? true : d.bool(forKey: "showMenuBarIcon") }
         set { d.set(newValue, forKey: "showMenuBarIcon") }
@@ -1387,6 +1397,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 新しい版の確認。確認用の起動と試作版（.dev）では見に行かない
+        if !CommandLine.arguments.contains(where: { $0.hasPrefix("--test-") || $0 == "--no-hotkeys" }),
+           Bundle.main.bundleIdentifier?.hasSuffix(".dev") == false {
+            Updater.shared.start()
+        }
+        // --test-update-check : いちばん新しい版を見に行けるかだけを確かめる（窓は出さない）
+        if CommandLine.arguments.contains("--test-update-check") {
+            let pairs = [("0.18.10", "0.18.9"), ("0.19.0", "0.18.1"), ("0.18.1", "0.18.1"), ("0.18.0", "0.18.1"), ("1.0", "0.99.9")]
+            log("テスト: 版の比べ方 " + pairs.map { "\($0.0)>\($0.1)=\(Updater.isNewer($0.0, than: $0.1))" }.joined(separator: " "))
+            Updater.shared.check(manual: false) { version in
+                log("テスト: 更新の確認 いちばん新しい版=\(version ?? "取れない") 更新の項目=\(Updater.shared.updateItem.isHidden ? "隠れている" : Updater.shared.updateItem.title)")
+                NSApp.terminate(nil)
+            }
+        }
+        // --update-now : 新しい版があれば、聞かずにそのまま入れ替える（入れ替えの確認用）
+        if CommandLine.arguments.contains("--update-now") {
+            Updater.quiet = true
+            Updater.shared.check(manual: false) { version in
+                if Updater.shared.latest != nil { Updater.shared.install() } else { log("更新するものがない（いちばん新しい版=\(version ?? "取れない")）"); NSApp.terminate(nil) }
+            }
+        }
         // 範囲選びをすぐ出せるように、画面の一覧を先に取っておく
         if #available(macOS 14.0, *) {
             DisplayCache.shared.warm()
@@ -2826,6 +2857,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let settings = NSMenuItem(title: "設定…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
+        menu.addItem(Updater.shared.checkItem)
+        menu.addItem(Updater.shared.updateItem)
         menu.addItem(.separator())
         add("Kiritori を終了", #selector(quit))
 
