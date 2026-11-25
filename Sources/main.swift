@@ -1458,6 +1458,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 NSApp.terminate(nil)
             }
         }
+        // --show-update-badge : 新しい版が無くても印に点を出し、印の場所を記録する（点の見た目の確認用。--stay で開いたままにする）
+        if CommandLine.arguments.contains("--show-update-badge") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                self.forceUpdateBadge = true
+                self.applyUpdateBadge()
+                if let f = self.statusItem?.button?.window?.frame, let top = NSScreen.screens.first?.frame.maxY {
+                    log("テスト: 印の場所 x=\(Int(f.minX)) y=\(Int(top - f.maxY)) w=\(Int(f.width)) h=\(Int(f.height))")
+                }
+                if !CommandLine.arguments.contains("--stay") { NSApp.terminate(nil) }
+            }
+        }
         // --update-now : 新しい版があれば、聞かずにそのまま入れ替える（入れ替えの確認用）
         if CommandLine.arguments.contains("--update-now") {
             Updater.quiet = true
@@ -2855,6 +2866,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 img?.isTemplate = true
                 button.image = img
             }
+            applyUpdateBadge()
         }
         let menu = NSMenu()
         menu.delegate = self
@@ -3081,6 +3093,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.menu = statusMenu
             item.isVisible = Prefs.showMenuBarIcon
         }
+        applyUpdateBadge()
+    }
+
+    /// 新しい版があるあいだ、メニューバーの印の右上に出すオレンジの点
+    private var updateBadge: UpdateBadgeView?
+    /// 確認用：新しい版が無くても点を出す
+    var forceUpdateBadge = false
+
+    /// 新しい版があれば点を出し、無ければ消す。録画中（印が「■ 0:12」のあいだ）は出さない。
+    func applyUpdateBadge() {
+        guard let button = statusItem?.button else { return }
+        let show = (Updater.shared.latest != nil || forceUpdateBadge) && !RecordController.shared.isRecording
+        if show, updateBadge == nil {
+            let size: CGFloat = 7
+            // 印（カメラの枠）の右上の角に重ねる。ボタンは上が 0 の向きなので、上へは引き算
+            let dot = UpdateBadgeView(frame: NSRect(x: button.bounds.midX + 3.5, y: button.bounds.midY + (button.isFlipped ? -9.5 : 2.5), width: size, height: size))
+            dot.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
+            button.addSubview(dot)
+            updateBadge = dot
+        }
+        updateBadge?.isHidden = !show
+        if !RecordController.shared.isRecording {
+            button.toolTip = show ? "新しい版があります（メニューの「\(Updater.shared.updateItem.title)」で更新）" : nil
+        }
     }
 
     /// メニューバーの印を出す・隠す。隠しているときは、Kiritori をもう一度開くと設定画面が出る。
@@ -3104,6 +3140,15 @@ if let bundleID = Bundle.main.bundleIdentifier,
    NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).count > 1 {
     log("すでに起動しているので終了")
     exit(0)
+}
+
+/// メニューバーの印に重ねる小さな点。メニューバーの色に埋もれないよう、細いふちを付ける。
+final class UpdateBadgeView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.systemOrange.setFill()
+        NSBezierPath(ovalIn: bounds.insetBy(dx: 0.5, dy: 0.5)).fill()
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }   // 押したらメニューが開くように、クリックは素通しにする
 }
 
 let app = NSApplication.shared

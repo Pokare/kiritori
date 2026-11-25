@@ -97,6 +97,7 @@ final class Updater: NSObject {
                     self.latest = found
                     self.updateItem.title = "v\(found.version) に更新する"
                     self.updateItem.isHidden = false
+                    (NSApp.delegate as? AppDelegate)?.applyUpdateBadge()
                     // 自動の確認では、同じ版を何度も知らせない。録画中は邪魔になるので次の確認まで待つ
                     if manual || (Prefs.updateNotified != found.version && !RecordController.shared.isRecording && completion == nil) {
                         Prefs.updateNotified = found.version
@@ -105,6 +106,7 @@ final class Updater: NSObject {
                 } else {
                     self.latest = nil
                     self.updateItem.isHidden = true
+                    (NSApp.delegate as? AppDelegate)?.applyUpdateBadge()
                     if manual { self.say("いまの版がいちばん新しい版です", "Kiritori \(self.current)") }
                 }
                 completion?(found.version)
