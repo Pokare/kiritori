@@ -205,6 +205,10 @@ final class ShotSelectionPanel: NSPanel {
 /// 全部の画面に幕を出して、スクショの範囲を選ばせる。
 final class ShotSelector {
     private var panels: [ShotSelectionPanel] = []
+    /// 幕は全部の画面を覆っているので、出ている間のクリックは必ず Kiritori に届くはず。
+    /// よそのアプリへ行ったクリックがあれば、同じキーにほかのアプリも反応して手前に何か出している。
+    private var clickMonitor: Any?
+    private(set) var clickWentElsewhere = false
     private let frozen: [(screen: NSScreen, image: CGImage)]
     private let hint: String
     /// rect は全画面を通した AppKit の座標（クリックだけなら nil）。cropped は止めた画面から切り出した画像（生の幕なら nil）。
@@ -279,9 +283,14 @@ final class ShotSelector {
         let mouse = NSEvent.mouseLocation
         for panel in panels { panel.orderFrontRegardless() }
         (panels.first { NSMouseInRect(mouse, $0.frame, false) } ?? panels.first)?.makeKey()
+        if clickMonitor == nil {
+            clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] _ in self?.clickWentElsewhere = true }
+        }
     }
 
     func close() {
+        if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+        clickMonitor = nil
         panels.forEach { $0.orderOut(nil) }
         panels = []
     }

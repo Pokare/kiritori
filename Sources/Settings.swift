@@ -150,6 +150,12 @@ final class SettingsController: NSObject, NSWindowDelegate {
 
     func refresh() { refreshers.forEach { $0() } }
 
+    /// 「ショートカット」のタブを開く
+    func showShortcuts() {
+        show()
+        tabs.selectedTabViewItemIndex = 2
+    }
+
     func windowWillClose(_ notification: Notification) {
         shortcutFields.filter(\.isRecording).forEach { $0.stop(nil) }
     }
@@ -353,7 +359,7 @@ final class SettingsController: NSObject, NSWindowDelegate {
         for spec in HotKeys.specs {
             let field = ShortcutField(spec: spec)
             field.onChange = { [weak self] message in
-                self?.shortcutNote.stringValue = message ?? " "
+                self?.shortcutNote.stringValue = message ?? ShortcutConflicts.settingsNote() ?? " "
                 self?.shortcutFields.forEach { $0.refresh() }
                 self?.delegate?.refreshMenuShortcuts()
             }
@@ -365,11 +371,15 @@ final class SettingsController: NSObject, NSWindowDelegate {
             HotKeys.specs.forEach { Prefs.resetHotKey($0.name) }
             HotKeys.registerAll()
             self?.shortcutFields.forEach { $0.refresh() }
-            self?.shortcutNote.stringValue = " "
+            self?.shortcutNote.stringValue = ShortcutConflicts.settingsNote() ?? " "
             self?.delegate?.refreshMenuShortcuts()
         }))
         views.append(note("欄を押してから、使いたいキーの組み合わせを押します。delete で「なし」、esc でやめる。最初の設定は ⌘⇧ と数字です。macOS の標準のスクリーンショットと同じ組み合わせにするときは、システム設定のキーボード → キーボードショートカット → スクリーンショットで、macOS 側を先に切っておきます。"))
-        refreshers.append { [weak self] in self?.shortcutFields.forEach { $0.refresh() } }
+        refreshers.append { [weak self] in
+            self?.shortcutFields.forEach { $0.refresh() }
+            // 設定画面を開いたときにも、macOS 標準との重なりを出す
+            if self?.shortcutFields.contains(where: \.isRecording) == false { self?.shortcutNote.stringValue = ShortcutConflicts.settingsNote() ?? " " }
+        }
         return pane("ショートカット", symbol: "keyboard", views)
     }
 

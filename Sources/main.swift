@@ -578,14 +578,23 @@ final class CaptureController {
                 NSSound.beep()
                 return
             }
+            // 幕が出ている間にクリックがよそへ行っていたら、撮り終わってから「キーが重なっていそう」と知らせる
+            func tellIfStolen(_ stolen: Bool) {
+                guard stolen else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { ShortcutConflicts.suspectOtherApp("area") }
+            }
             let selector = ShotSelector(frozen: shots, hint: "ドラッグで撮る範囲を選ぶ　／　esc か右クリックでやめる", onDone: { [weak self] rect, screen, cropped in
+                let stolen = self?.shotSelector?.clickWentElsewhere ?? false
                 self?.shotSelector = nil
                 self?.busy = false
+                tellIfStolen(stolen)
                 guard let cropped else { return }
                 self?.saveCaptured(cropped, scale: screen.backingScaleFactor, source: source, kind: "area", rect: rect)
             }, onCancel: { [weak self] in
+                let stolen = self?.shotSelector?.clickWentElsewhere ?? false
                 self?.shotSelector = nil
                 self?.busy = false
+                tellIfStolen(stolen)
             })
             self.shotSelector = selector
             selector.show()
@@ -1397,6 +1406,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // ショートカットが macOS 標準のスクリーンショットと重なっていたら知らせる（確認用の起動では窓を出さない）
+        if CommandLine.arguments.contains(where: { $0.hasPrefix("--test-") || $0 == "--no-hotkeys" || $0 == "--update-now" }) {
+            ShortcutConflicts.quiet = true
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { ShortcutConflicts.checkAtLaunch() }
+        }
+        // --test-conflicts : macOS 標準のキーを読めるか、重なりの見つけ方が合っているかを確かめる
+        if CommandLine.arguments.contains("--test-conflicts") { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {   // ショートカットの一覧ができてから
+            let system = ShortcutConflicts.systemShortcuts()
+            log("テスト: 生きている macOS 標準 \(system.count)個 " + system.map { "\($0.title)=\(shortcutText(key: $0.key, mods: $0.mods))" }.joined(separator: " / "))
+            func report(_ label: String) {
+                let hits = ShortcutConflicts.withSystem()
+                log("テスト: \(label) 重なり=\(hits.isEmpty ? "なし" : hits.map { "\($0.title) \($0.keys)＝\($0.system)" }.joined(separator: " / ")) 設定画面の一文=\(ShortcutConflicts.settingsNote() ?? "なし")")
+            }
+            report("いまの設定")
+            // 範囲のキーを、生きている標準のキーに一時的に合わせてみる（終わったら戻す）
+            if let target = system.first {
+                let old = Prefs.hotKey("area", defaultKey: kVK_ANSI_4)
+                Prefs.setHotKey("area", key: target.key, mods: target.mods)
+                report("範囲を \(shortcutText(key: target.key, mods: target.mods)) にした場合")
+                ShortcutConflicts.checkAtLaunch()
+                ShortcutConflicts.suspectOtherApp("area")
+                Prefs.setHotKey("area", key: old.key, mods: old.mods)
+            } else {
+                // このMacは標準のキーが全部切ってある。Mac mini と同じ状態（標準の ⌘⇧4 が生きている）を仮に作って確かめる
+                ShortcutConflicts.testOverride = [(UInt32(kVK_ANSI_4), UInt32(cmdKey | shiftKey), "範囲を撮る")]
+                let old = Prefs.hotKey("area", defaultKey: kVK_ANSI_4)
+                Prefs.setHotKey("area", key: UInt32(kVK_ANSI_4), mods: UInt32(cmdKey | shiftKey))
+                report("標準の ⌘⇧4 が生きていて、範囲も ⌘⇧4 の場合")
+                ShortcutConflicts.checkAtLaunch()
+                ShortcutConflicts.suspectOtherApp("area")
+                Prefs.setHotKey("area", key: UInt32(kVK_ANSI_4), mods: UInt32(controlKey | optionKey))
+                report("範囲を ⌃⌥4 に変えた場合")
+                Prefs.setHotKey("area", key: old.key, mods: old.mods)
+                ShortcutConflicts.testOverride = nil
+            }
+            NSApp.terminate(nil)
+        } }
         // 新しい版の確認。確認用の起動と試作版（.dev）では見に行かない
         if !CommandLine.arguments.contains(where: { $0.hasPrefix("--test-") || $0 == "--no-hotkeys" }),
            Bundle.main.bundleIdentifier?.hasSuffix(".dev") == false {
