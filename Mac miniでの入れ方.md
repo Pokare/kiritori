@@ -4,7 +4,7 @@
 
 ## 入れる
 
-① Mac mini のブラウザで https://github.com/Pokare/kiritori/releases/latest を開き、`Kiritori-0.18.0.zip` を取る（版が上がったら同じページに新しい zip が載ります）
+① Mac mini のブラウザで https://github.com/Pokare/kiritori/releases/latest を開き、`Kiritori-0.18.1.zip` を取る（版が上がったら同じページに新しい zip が載ります）
 
 ② zip を開いて `Kiritori.app` を「アプリケーション」フォルダへ入れる
 

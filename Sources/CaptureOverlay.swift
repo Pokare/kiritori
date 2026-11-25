@@ -3,6 +3,7 @@
 // セルフタイマーとスクロール撮影では、画面を止めない「生」の幕として同じ部品を使う。
 
 import AppKit
+import ScreenCaptureKit
 
 /// 範囲を選ぶビュー。frozen があれば、その画像を止めた画面として下に敷いてある前提で、拡大鏡を出す。
 final class ShotSelectionView: NSView {
@@ -299,7 +300,185 @@ final class ShotSelector {
 }
 
 /// 全部の画面を1枚ずつ撮る（画面を止めた画像にする）。終わったら main で返す。
-func captureAllScreens(completion: @escaping ([(screen: NSScreen, image: CGImage)]) -> Void) {
+/// macOS 14 以上は画面の絵をメモリで直接もらう（速い）。もらえなかった画面があれば、ファイル経由の古いやり方でやり直す。
+/// hide に渡した窓（先に出してある仮の幕）は絵に写さない。
+func captureAllScreens(hide: [NSWindow] = [], completion: @escaping ([(screen: NSScreen, image: CGImage)]) -> Void) {
+    let started = Date()
+    func ms() -> Int { Int(Date().timeIntervalSince(started) * 1000) }
+    // 確認用：KIRITORI_FREEZE_FILE=1 で古いやり方に固定する（速さを比べるため）
+    if #available(macOS 14.0, *), ProcessInfo.processInfo.environment["KIRITORI_FREEZE_FILE"] == nil {
+        let count = NSScreen.screens.count
+        captureAllScreensDirect(hide: hide.map { $0.windowNumber }) { shots in
+            if shots.count == count, count > 0 {
+                log("画面を止めた（直接）\(count)枚 \(ms())ms")
+                completion(shots)
+            } else {
+                log("画面を直接もらえなかった（\(shots.count)/\(count)枚）。ファイル経由でやり直す")
+                captureAllScreensByFile { shots in
+                    log("画面を止めた（ファイル経由）\(shots.count)枚 \(ms())ms")
+                    completion(shots)
+                }
+            }
+        }
+    } else {
+        captureAllScreensByFile { shots in
+            log("画面を止めた（ファイル経由）\(shots.count)枚 \(ms())ms")
+            completion(shots)
+        }
+    }
+}
+
+@available(macOS 14.0, *)
+private func captureAllScreensDirect(hide: [Int], completion: @escaping ([(screen: NSScreen, image: CGImage)]) -> Void) {
+    // 画面の番号・大きさ・設定は main で先に読んでおく（このあとの処理は別の場所で走る）
+    struct Target { let index: Int; let screen: NSScreen; let id: UInt32; let width: Int; let height: Int }
+    var targets: [Target] = []
+    for (i, screen) in NSScreen.screens.enumerated() {
+        guard let num = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value else { continue }
+        targets.append(Target(index: i, screen: screen, id: num,
+                              width: Int((screen.frame.width * screen.backingScaleFactor).rounded()),
+                              height: Int((screen.frame.height * screen.backingScaleFactor).rounded())))
+    }
+    let cursor = Prefs.shotCursor
+    let started = Date()
+    // 画面の一覧は取るのに時間がかかるので、前に取ったものを使い回す（画面のつなぎ方が変わったら取り直す）
+    DisplayCache.shared.displays(for: targets.map { $0.id }, hide: hide) { displays, hidden in
+        let listed = Int(Date().timeIntervalSince(started) * 1000)
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var found: [(Int, NSScreen, CGImage)] = []
+        for target in targets {
+            guard let display = displays.first(where: { $0.displayID == target.id }) else { continue }
+            let config = SCStreamConfiguration()
+            config.width = target.width
+            config.height = target.height
+            config.showsCursor = cursor
+            config.colorSpaceName = CGColorSpace.sRGB
+            config.captureResolution = .best
+            let filter = SCContentFilter(display: display, excludingWindows: hidden)
+            group.enter()
+            SCScreenshotManager.captureImage(contentFilter: filter, configuration: config) { image, _ in
+                if let image { lock.lock(); found.append((target.index, target.screen, image)); lock.unlock() }
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) {
+            log("画面の一覧 \(listed)ms（外す窓 \(hidden.count)/\(hide.count)）／撮る \(Int(Date().timeIntervalSince(started) * 1000) - listed)ms")
+            if found.count != targets.count { DisplayCache.shared.clear() }
+            completion(found.sorted { $0.0 < $1.0 }.map { (screen: $0.1, image: $0.2) })
+        }
+    }
+}
+
+/// 止めた絵が届くまでの仮の幕。画面を暗くしてカーソルを十字にするだけ（押してすぐ反応が見えるように）。
+/// このあと撮る「止めた絵」には写さない。
+final class PendingCrosshair {
+    private(set) var panels: [NSPanel] = []
+
+    func show() {
+        for screen in NSScreen.screens {
+            let panel = KeyablePanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            panel.setFrame(screen.frame, display: false)
+            panel.isReleasedWhenClosed = false
+            panel.level = .screenSaver
+            panel.isOpaque = false
+            panel.backgroundColor = NSColor.black.withAlphaComponent(0.3)   // 本物の幕と同じ濃さ。透明に近いとカーソルが十字に変わらない
+            panel.hasShadow = false
+            panel.hidesOnDeactivate = false
+            panel.animationBehavior = .none
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            panel.ignoresMouseEvents = false   // 透明な窓でもマウスを受ける
+            panel.sharingType = .none          // 止めた絵に写さない（撮るときにも窓を名指しで外す＝二重の備え）
+            panel.acceptsMouseMovedEvents = true
+            panel.contentView = CrosshairCursorView(frame: NSRect(origin: .zero, size: screen.frame.size))
+            panels.append(panel)
+        }
+        let mouse = NSEvent.mouseLocation
+        for panel in panels { panel.orderFrontRegardless() }
+        (panels.first { NSMouseInRect(mouse, $0.frame, false) } ?? panels.first)?.makeKey()
+        NSCursor.crosshair.set()
+    }
+
+    func close() {
+        panels.forEach { ($0.contentView as? CrosshairCursorView)?.stop(); $0.orderOut(nil) }
+        panels = []
+    }
+}
+
+final class KeyablePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
+/// 仮の幕の中身。本物の幕と同じ十字の線を、カーソルの位置に描く。
+/// 鍵のない窓にはマウスの動きが届かないことがあるので、短い間だけタイマーでカーソルの位置を見に行く。
+final class CrosshairCursorView: NSView {
+    private var timer: Timer?
+    private var last = NSPoint(x: -1, y: -1)
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
+
+    override func viewDidMoveToWindow() {
+        timer?.invalidate()
+        timer = nil
+        guard window != nil, Prefs.showCrosshair else { return }
+        let t = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let now = NSEvent.mouseLocation
+            if now != self.last { self.last = now; self.needsDisplay = true }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    func stop() { timer?.invalidate(); timer = nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard Prefs.showCrosshair, let window else { return }
+        let mouse = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        guard bounds.contains(mouse) else { return }
+        // 本物の幕（ShotSelectionView）と同じ線
+        let lines = NSBezierPath()
+        lines.move(to: NSPoint(x: 0, y: mouse.y.rounded() + 0.5)); lines.line(to: NSPoint(x: bounds.maxX, y: mouse.y.rounded() + 0.5))
+        lines.move(to: NSPoint(x: mouse.x.rounded() + 0.5, y: 0)); lines.line(to: NSPoint(x: mouse.x.rounded() + 0.5, y: bounds.maxY))
+        lines.lineWidth = 1
+        NSColor.black.withAlphaComponent(0.35).setStroke()
+        lines.stroke()
+        lines.setLineDash([4, 4], count: 2, phase: 0)
+        NSColor.white.withAlphaComponent(0.9).setStroke()
+        lines.stroke()
+    }
+}
+
+/// 画面の一覧（SCDisplay）の使い回し。起動時と、画面のつなぎ方が変わったときに取り直しておく。
+@available(macOS 14.0, *)
+final class DisplayCache {
+    static let shared = DisplayCache()
+    private var cached: [SCDisplay] = []
+    private let lock = NSLock()
+
+    func clear() { lock.lock(); cached = []; lock.unlock() }
+
+    /// 先に取っておく（main から呼ぶ）
+    func warm() {
+        SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: true) { [weak self] content, _ in
+            guard let self, let content else { return }
+            self.lock.lock(); self.cached = content.displays; self.lock.unlock()
+        }
+    }
+
+    /// hide が空なら前に取った一覧をそのまま返す。hide があるときは窓を探すために取り直す（20ms ほど）。
+    func displays(for ids: [UInt32], hide: [Int], completion: @escaping ([SCDisplay], [SCWindow]) -> Void) {
+        lock.lock(); let have = cached; lock.unlock()
+        if hide.isEmpty, !ids.isEmpty, ids.allSatisfy({ id in have.contains { $0.displayID == id } }) { completion(have, []); return }
+        SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: true) { [weak self] content, _ in
+            let displays = content?.displays ?? []
+            if let self { self.lock.lock(); self.cached = displays; self.lock.unlock() }
+            completion(displays, (content?.windows ?? []).filter { hide.contains(Int($0.windowID)) })
+        }
+    }
+}
+
+private func captureAllScreensByFile(completion: @escaping ([(screen: NSScreen, image: CGImage)]) -> Void) {
     let screens = NSScreen.screens
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("kiritori-freeze-\(UUID().uuidString)")
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

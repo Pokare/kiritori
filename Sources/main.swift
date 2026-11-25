@@ -550,7 +550,17 @@ final class CaptureController {
     func captureAreaWithOverlay() {
         busy = true
         let source = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        captureAllScreens { [weak self] shots in
+        // 画面を止めるのに 0.2 秒ほどかかるので、その間は先に仮の幕（暗くする＋十字の線）を出しておく
+        // （カーソルも写す設定のときは、十字のカーソルが写ってしまうので出さない）
+        let pressed = Date()
+        let pending: PendingCrosshair? = Prefs.shotCursor ? nil : PendingCrosshair()
+        pending?.show()
+        let pendingMs = Int(Date().timeIntervalSince(pressed) * 1000)
+        captureAllScreens(hide: pending?.panels ?? []) { [weak self] shots in
+            defer {
+                pending?.close()
+                log("範囲選び: 仮の幕 \(pending == nil ? "なし" : "\(pendingMs)ms")／本物の幕 \(Int(Date().timeIntervalSince(pressed) * 1000))ms")
+            }
             guard let self else { return }
             guard !shots.isEmpty else {
                 self.busy = false
@@ -1377,6 +1387,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 範囲選びをすぐ出せるように、画面の一覧を先に取っておく
+        if #available(macOS 14.0, *) {
+            DisplayCache.shared.warm()
+            NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { _ in
+                DisplayCache.shared.warm()
+            }
+        }
         migrateOldDefaults()
         cleanHistory()
         buildMainMenu()
@@ -2356,8 +2373,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 DispatchQueue.main.asyncAfter(deadline: .now() + secs) { session.doneTapped() }
             }
         }
+        // --test-pending-shot : 仮の幕を出したまま画面を止めて、幕が絵に写るかを明るさの平均で比べる
+        if args.contains("--test-pending-shot") {
+            func mean(_ shots: [(screen: NSScreen, image: CGImage)]) -> String {
+                shots.map { shot -> String in
+                    let rep = NSBitmapImageRep(cgImage: shot.image)
+                    var sum = 0.0, n = 0.0
+                    for y in stride(from: 0, to: rep.pixelsHigh, by: 16) { for x in stride(from: 0, to: rep.pixelsWide, by: 16) {
+                        if let c = rep.colorAt(x: x, y: y) { sum += Double(c.redComponent + c.greenComponent + c.blueComponent) / 3; n += 1 }
+                    } }
+                    return String(format: "%.4f", sum / max(n, 1))
+                }.joined(separator: " / ")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                captureAllScreens { before in
+                    log("テスト: 幕なしの明るさ \(mean(before))")
+                    let pending = PendingCrosshair()
+                    pending.show()
+                    do {
+                        captureAllScreens(hide: ProcessInfo.processInfo.environment["KT_NOHIDE"] == nil ? pending.panels : []) { after in
+                            log("テスト: 幕ありの明るさ \(mean(after))")
+                            pending.close()
+                            NSApp.terminate(nil)
+                        }
+                    }
+                }
+            }
+        }
+        // --test-pending : 仮の幕でカーソルが十字になるか、止めた絵に幕が写らないかを確かめる
+        if args.contains("--test-pending") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                func describe(_ c: NSCursor?) -> String { c.map { "大きさ \(Int($0.image.size.width))x\(Int($0.image.size.height)) 中心 \(Int($0.hotSpot.x)),\(Int($0.hotSpot.y))" } ?? "なし" }
+                log("テスト: 出す前のカーソル \(describe(NSCursor.currentSystem))／十字の見本 \(describe(NSCursor.crosshair))")
+                let pending = PendingCrosshair()
+                let started = Date()
+                pending.show()
+                log("テスト: 仮の幕を出すまで \(Int(Date().timeIntervalSince(started) * 1000))ms")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    log("テスト: 0.15秒後のカーソル \(describe(NSCursor.currentSystem))")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        log("テスト: 0.75秒後のカーソル \(describe(NSCursor.currentSystem))")
+                        pending.close()
+                        NSApp.terminate(nil)
+                    }
+                }
+            }
+        }
         // --test-freeze : 全部の画面を止めた画像にできるかだけを確かめる（幕は出さない）
         if args.contains("--test-freeze") {
+          // 起動してすぐは画面の一覧がまだ無いので、少し待ってから測る（ふだんの使い方に合わせる）
+          DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             let started = Date()
             captureAllScreens { shots in
                 let text = shots.map { "\($0.image.width)x\($0.image.height)（画面 \(Int($0.screen.frame.width))x\(Int($0.screen.frame.height))・倍率 \($0.screen.backingScaleFactor)）" }.joined(separator: " / ")
@@ -2375,6 +2440,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 log("テスト: 画面を止める 枚数=\(shots.count) \(String(format: "%.2f", Date().timeIntervalSince(started)))秒 \(text)")
                 NSApp.terminate(nil)
             }
+          }
         }
         // --test-history <出力png> : 履歴の画面を画面に出さずに組み、選ぶ・キー・削除・小窓に戻すを通して書き出す
         if let i = args.firstIndex(of: "--test-history"), i + 1 < args.count {

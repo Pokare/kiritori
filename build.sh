@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 APP_NAME="Kiritori"
 # 2026-11-21 に local.kiritori から付け直した（理由は「Mac miniでの入れ方.md」の「作り直すとき」）
 BUNDLE_ID="${KIRITORI_BUNDLE_ID:-local.takesuzue.kiritori}"
-VERSION="0.18.0"
+VERSION="0.18.1"
 MIN_OS="13.0"
 # 試作は KIRITORI_BUILD_DIR=build-dev KIRITORI_BUNDLE_ID=local.takesuzue.kiritori.dev ./build.sh で別の場所に作る
 # （動いている本体を止めずに済み、画面収録の許可も外れない）
